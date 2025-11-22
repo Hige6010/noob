@@ -99,7 +99,9 @@ def test(StudentModel, test_loader, args, file_path):
     #                + ' test--ACC: ' + str(f"{acc:.4f}"))
     return acc, f1_score
 
+#用于创建学习率调度器
 def get_scheduler(optimizer, args):
+    #ReduceLROnPlateau 类型：这是 PyTorch 中的一种学习率调度策略，当某个指标（如验证准确率）停止改善时，自动降低学习率。
     return optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, "max", patience=args.lr_patience, verbose=True, factor=args.lr_factor
     )
@@ -107,6 +109,7 @@ def get_scheduler(optimizer, args):
 def kd(device, file_path, args, TeacherModel, StudentModel, train_loader, test_loader):
 
     print("-------------KDModel start---------------")
+    # 蒸馏损失计算函数,用于计算教师模型和学生模型之间的 “知识蒸馏损失”（衡量两者输出 / 特征的差异）
     kd_criterion = MAD()
     optimizer = torch.optim.Adam(StudentModel.parameters(), lr=args.kd_lr, weight_decay=1e-5)
     scheduler = get_scheduler(optimizer, args)
@@ -135,11 +138,11 @@ def kd(device, file_path, args, TeacherModel, StudentModel, train_loader, test_l
 
             data_num = target.size(0)
             gt = target.clone()
-            target = target.long().cuda()
+            target = target.long().cuda()# 学生模型用的类别标签
 
             # NOTE: 把gt改成one_hot
-            gt_onehot = F.one_hot(gt.to(torch.int64), args.class_num).float().cuda()
-            sn = sn.float().cuda()
+            gt_onehot = F.one_hot(gt.to(torch.int64), args.class_num).float().cuda()# 教师模型用的one-hot标签
+            sn = sn.float().cuda()# 视图缺失掩码
 
             # 取出teacher model的EncX 和 predict
             with torch.no_grad():
@@ -150,6 +153,7 @@ def kd(device, file_path, args, TeacherModel, StudentModel, train_loader, test_l
             # kd_loss = kd_criterion.new_kd(fm_t, fm_s, logit_t, output)
             # NOTE: 注意使用的蒸馏损失是否加权了
             # kd_loss = kd_criterion.forward(fm_t, fm_s, logit_t)
+            # 计算蒸馏损失（学生特征与教师特征的差异）
             kd_loss = kd_criterion.mse_loss(fm_t, fm_s)
 
             _, lbs = torch.max(F.log_softmax(output, dim=-1), dim=1)
@@ -159,10 +163,12 @@ def kd(device, file_path, args, TeacherModel, StudentModel, train_loader, test_l
 
             # ce_loss = torch.mean(evidence_loss(target, output, args.class_num, epoch, args.lambda_epochs))
             # ce_loss = regularization(output, target, epoch, args)
+            # 计算分类损失（学生预测与真实标签的差异）
             ce_loss = F.cross_entropy(output, target, reduction='mean')
 
             correct_num = (lbs == target).sum().item()
             acc_meter.update(correct_num / target.size(0))
+            # 总损失 = 分类损失 + 蒸馏损失（带权重）
             loss = ce_loss + args.lam * kd_loss
             # loss = ce_loss #+ args.lam * kd_loss
 
@@ -215,6 +221,7 @@ def kd(device, file_path, args, TeacherModel, StudentModel, train_loader, test_l
     # torch.save(StudentModel.state_dict(), path)
 
     return best_test_acc, best_test_f1, best_epoch
+
 
 
 
