@@ -112,6 +112,7 @@ def attention(q, k, v, d_k, mask=None, src_mask=None, dropout=None):
     output = torch.matmul(scores, v)
     return output
 
+#计算输入特征（node_emb 和 label_emb）之间的关联关系，通过加权融合生成更具代表性的特征
 class linear_attention(nn.Module):
     def __init__(self, in_dim):
         super(linear_attention, self).__init__()
@@ -142,6 +143,7 @@ class linear_attention(nn.Module):
         #     src_mask = torch.matmul(src_mask.transpose(-2, -1), src_mask)
         #     attention_score = attention_score.masked_fill(src_mask == 0, -1e9)  # mask invalid view
 
+        #tril 生成下三角矩阵，将上三角区域的分数设为 -1e9，使 softmax 后这些区域的权重为 0
         mask = torch.tril(torch.ones_like(attention_score))
         attention_score = attention_score.masked_fill(mask == 0, -1e9)
 
@@ -151,12 +153,15 @@ class linear_attention(nn.Module):
 
         return z
 
+#让模型能够同时从不同的 “子空间” 关注输入数据的不同部分
 class MultiHeadAttention(nn.Module):
     def __init__(self, heads, d_model, dropout=0.1):
         super().__init__()
 
         self.d_model = d_model
+        #每个头的特征维度
         self.d_k = d_model // heads
+        #头的数量
         self.h = heads
 
         self.q_linear = nn.Linear(d_model, d_model)
@@ -172,6 +177,7 @@ class MultiHeadAttention(nn.Module):
 
         q = k
         # perform linear operation and split into N heads
+        #-1 表示保持序列长度 seq_len 不变
         k = self.k_linear(k).view(-1, bs, self.h, self.d_k)  # [3, 128, 4, 64]
         q = self.q_linear(q).view(-1, bs, self.h, self.d_k)
         v = self.v_linear(v).view(-1, bs, self.h, self.d_k)
@@ -181,6 +187,7 @@ class MultiHeadAttention(nn.Module):
         q = q.transpose(1, 2)
         v = v.transpose(1, 2)
 
+        #计算注意力得分
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)  # [3, 4, 128, 128]
 
         # NOTE:注意mask的形状
@@ -192,6 +199,8 @@ class MultiHeadAttention(nn.Module):
 
 
         scores = F.softmax(scores, dim=-1)  # [3, 4, 128, 64]
+        # 调整维度并拼接所有头的结果
+        #contiguous确保张量有序
         concat = scores.transpose(1, 2).contiguous() \
             .view(-1, bs, self.d_model)  # [3, 128, 4, 64]
 
@@ -199,13 +208,15 @@ class MultiHeadAttention(nn.Module):
 
         return output
 
-
+#线性注意力加权融合
 class LinearAttention(nn.Module):
     def __init__(self, d_model, key_dim, attn_ratio=4):
         super().__init__()
+        #注意力得分的缩放系数
         self.scale = key_dim ** -0.5
         self.scale = d_model ** -0.5
         self.key_dim = key_dim
+        #value的中间维度
         self.d = int(attn_ratio * key_dim)
         self.attn_ratio = attn_ratio
 
@@ -225,54 +236,77 @@ class LinearAttention(nn.Module):
         k = self.key_proj(key_value)  # B, L, key_dim
         v = self.value_proj(key_value)  # B, L, d
 
+        
         attn = (q @ k.transpose(-2, -1)) * self.scale  # B, L, L
         attn = F.softmax(attn, dim=-1)
         out = attn @ v  # B, L, d
+        #线性注意力机制处理后的特征张量
         out = self.proj(out)  # B, L, d_model
         return out
 
 
+#级联注意力机制
+#多轮注意力机制逐步融合不同模态的信息，生成融合特征q
 class CascadedAttention(nn.Module):
     def __init__(self, d_model, key_dim, attn_ratio=4, num_modalities=3):
         super().__init__()
+        #储存多个LA层用于注意力计算
         self.layers = nn.ModuleList([LinearAttention(d_model, key_dim, attn_ratio) for _ in range(num_modalities - 1)])
         self.proj = nn.Linear(d_model, d_model)
 
     def forward(self, x):  # x1 (B, num_modalities, d_model)
         B, num_modalities, D = x.shape
+        #从输入 x 中提取第一个模态的特征作为初始查询（query），unsqueeze(1) 是为了匹配注意力计算的维度要求（增加序列长度维度）。
         query = x[:, 0, :].unsqueeze(1)
         attn_out = []
         for i in range(num_modalities-1):
             if i > 0:
+                # 从第2轮开始，将当前模态的特征与现有query相加（融合当前模态信息）
                 query = x[:, i, :].unsqueeze(1) + query  # Initial query from modality 0
+             # 定义当前轮的键值对（Key-Value）为下一个模态的特征
             key_value = x[:, i+1, :].unsqueeze(1)
+            # 通过第i个LinearAttention层，用key_value更新query
             query = self.layers[i](query, key_value)
             attn_out.append(query)
+        # 更新x为当前query，用于后续循环
         x = query
         # x1 = self.proj(torch.concatenate(attn_out, dim=1))
+        #融合所有模态信息后的query
         return x
 
+#前馈神经网络
 class FeedForward(nn.Module):
     def __init__(self, d_model, d_ff=2048, dropout=0.2):
         super().__init__()
 
         # We set d_ff as a default to 2048
+        # d_ff中间层的特征维度
         self.linear_1 = nn.Linear(d_model, d_ff)
         self.dropout_1 = nn.Dropout(dropout)
         self.linear_2 = nn.Linear(d_ff, d_model)
         self.dropout_2 = nn.Dropout(dropout)
 
     def forward(self, x):
+        #F.relu：引入非线性变化，捕捉更多非线性关联
         x = self.dropout_1(F.relu(self.linear_1(x)))
         x = self.dropout_2(self.linear_2(x))
         return x
 
 
+#门控线性单元，加强非线性表达能力
 class GLU(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout_rate=0.1):
         super(GLU, self).__init__()
+        #特征主体,扩展空间
         self.linear1 = nn.Linear(input_dim, hidden_dim)
+        #门控信号
         self.linear2 = nn.Linear(input_dim, hidden_dim)
+        #Sigmoid激活函数（门控）生成门控权重
+        '''
+        当权重接近 1 时：表示对应位置的特征 “重要”，会被几乎完全保留（通过 main_feature * gate 传递）；
+        当权重接近 0 时：表示对应位置的特征 “不重要” 或 “是噪声”，会被显著抑制（甚至过滤掉）；
+        经过多轮训练后，门控权重会稳定下来
+        '''
         self.sigmoid = nn.Sigmoid()
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -280,6 +314,7 @@ class GLU(nn.Module):
         return self.dropout(self.linear1(x)) * self.sigmoid(self.linear2(x))
 
 
+#基于门控线性单元（GLU）的前馈网络,引入残差链接和层归一化，构建更鲁棒的前馈网络
 class GLU_FFN(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout_rate=0.1):
         super(GLU_FFN, self).__init__()
@@ -292,9 +327,11 @@ class GLU_FFN(nn.Module):
         residual = x
         x = self.glu(x)
         x = self.dropout(self.linear(x))
+        #转换后的特征与原始特征相加（残差连接），保留原始信息的同时叠加新学到的特征；
         x = self.layernorm(x + residual)
         return x
 
+#对输入特征精选注意力交互+前馈变换处理
 class EncoderLayer(nn.Module):
     def __init__(self, d_model, heads, view_num, dropout=0.1):
         super().__init__()
@@ -319,7 +356,7 @@ class EncoderLayer(nn.Module):
         # x1 = x1 + self.dropout_1(self.attn(x2, x2, src_mask))
         attn = self.dropout_1(self.label_attentive(x2, x2, tau, src_mask))
         # attn = self.dropout_1(self.cascade(x2))
-        x = x + attn    # attention 后输出的形状为[bs, d_model]
+        x = x + attn    # 保留原始特征的同时，叠加注意力学到的关联信息
         x2 = self.norm_2(x)
         x = x + self.dropout_2(self.ff(x2))
         return x
@@ -328,6 +365,7 @@ class EncoderLayer(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, d_model, N, heads, view_num, dropout):
         super().__init__()
+        # 编码器层的堆叠数量
         self.N = N
 
         # self.pe = PositionalEncoder(d_model, dropout=dropout)
@@ -343,13 +381,16 @@ class Encoder(nn.Module):
         return self.norm(x)
 
 
+#多输入编码器，专门用于处理多个不同维度的输入特征
 class Multi_Encoder(nn.Module):
     def __init__(self, d_list, d_out, hidden_layers=3, hidden_dim=128, dropout_rate=0.1):
         super(Multi_Encoder, self).__init__()
         layers = []
 
+        # 为每个输入维度d创建一个子编码器
         for d in d_list:
             layer = []
+            #当前子编码器的输入维度（来自d_list中的某个值）
             in_dim = d
             for _ in range(hidden_layers):
                 layer.append(nn.Linear(in_dim, hidden_dim))
@@ -357,8 +398,9 @@ class Multi_Encoder(nn.Module):
                 layer.append(nn.Dropout(dropout_rate))
                 in_dim = hidden_dim
             layer.append(nn.Linear(hidden_dim, d_out))
+             # 将当前子编码器的层组合成一个序列模型
             layers.append(nn.Sequential(*layer))
-
+        # 用ModuleList管理所有子编码器（方便PyTorch跟踪参数）
         self.layers = nn.ModuleList(layers)
 
     def forward(self, x):
@@ -367,6 +409,7 @@ class Multi_Encoder(nn.Module):
         return outputs
 
 
+#对输入数据进行端到端的特征提取和编码
 class Transformer(nn.Module):
     def __init__(self, d_model, N, heads, view_num, dropout):
         super().__init__()
@@ -387,11 +430,15 @@ class Transformer(nn.Module):
 #
 #     def forward(self, x1):
 #         return self.fc(x1)
+#分类器，对输入特征进行分类预测
 class Classifier(nn.Module):
     def __init__(self, nhid, nclass, dropout=0., with_bn=True, with_bias=True):
         super(Classifier, self).__init__()
+        #是否使用批归一化，加速训练、稳定数值
         self.with_bn = with_bn
+        #nhid输入特征的维度，（通过线性变化和relu）过滤冗余信息
         self.layer1 = nn.Linear(nhid, int(nhid/2), bias=with_bias)
+        #两部降维，平衡模型表达能力与计算效率
         self.layer2 = nn.Linear(int(nhid/2), nclass, bias=with_bias)
         if with_bn:
             self.bn1 = nn.BatchNorm1d(int(nhid/2))
@@ -413,8 +460,10 @@ class Classifier(nn.Module):
         x = self.layer2(x)
 
         # return F.log_softmax(x1, dim=1)
+        #输出：未经过softmax的原始类别分数（logits）
         return x
 
+#解决自注意力机制本身无序的问题
 class PositionalEncoder(nn.Module):
     def __init__(self, d_model, max_seq_len=200, dropout=0.1):
         super().__init__()
@@ -422,26 +471,41 @@ class PositionalEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
         # create constant 'pe' matrix with values dependant on
         # pos and i
+        # 生成位置编码矩阵 pe (shape: [max_seq_len, d_model]
         pe = torch.zeros(max_seq_len, d_model)
+        # 遍历每个位置（0到max_seq_len-1）
         for pos in range(max_seq_len):
+            # 遍历特征维度（步长为2）
             for i in range(0, d_model, 2):
+                # 偶数维度用正弦函数
                 pe[pos, i] = \
                     math.sin(pos / (10000 ** ((2 * i) / d_model)))
+                # 奇数维度用余弦函数（i+1不超过d_model时）
                 pe[pos, i + 1] = \
                     math.cos(pos / (10000 ** ((2 * (i + 1)) / d_model)))
+        # 增加一个批次维度（shape变为 [1, max_seq_len, d_model]）
         pe = pe.unsqueeze(0)
+        # 将pe注册为缓冲区（不参与参数更新，但会被保存到模型状态中）
         self.register_buffer('pe', pe)
 
     def forward(self, x):
         # make embeddings relatively larger
+         # 1. 放大输入特征（让嵌入值相对更大，避免被位置编码覆盖）
         x = x * math.sqrt(self.d_model)
         # add constant to embedding
+        # 2. 获取输入序列的实际长度，并截取对应长度的位置编码
         seq_len = x.size(1)
+        # 截取前seq_len个位置的编码
         pe = Parameter(self.pe[:, :seq_len])
+        # 3. 确保位置编码与输入在同一设备（CPU/GPU
         if x.is_cuda:
             pe.cuda()
+        # 4. 将位置编码与输入特征相加（核心步骤：注入位置信息）
         x = x + pe
+        # 5. 应用dropout后返回
         return self.dropout(x)
+
+#最终输出
 class Model(nn.Module):
     def __init__(self, d_list,
                  d_model, n_layers, heads,
@@ -462,20 +526,21 @@ class Model(nn.Module):
         self.norm_1 = nn.LayerNorm([self.view_num+1, d_model])
         self.norm_2 = nn.LayerNorm([self.view_num+1, d_model])
         self.dropout_1 = nn.Dropout(dropout)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
-        self.to_latent = nn.Identity()
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model)) # 分类令牌（类似BERT的[CLS]）
+        self.to_latent = nn.Identity() # 恒等映射（预留接口）
         self.tau = tau
 
     def forward(self, x, src_mask=None):    # gt: [Bs, n_classes]
         for v in range(self.view_num):  # encode input view to features with same dimension
             x[v] = self.embeddinglayers[v](x[v])
         # x1 = self.MultiEncoder(x1)    # list
-        x = torch.stack(x, dim=1)  # B,view,dim
+        x = torch.stack(x, dim=1)  # B,view,dim # 堆叠成 [batch_size, view_num, d_model] 格式
         # x1 = self.PositionalEncoder(x1)
         b, n, _ = x.shape
         # cls_tokens = repeat(self.cls_token, '() n d->b n d', b=b)
         # x1 = torch.cat((cls_tokens, x1), dim=1)
 
+        # Transformer编码（捕捉视图间关系）
         x = self.ETrans(x, self.tau, src_mask)  # mask/src_mask: [B, view]
 
         # step2: linear attention
@@ -498,6 +563,7 @@ class Model(nn.Module):
         # x1 = self.to_latent(x1)
 
         # EncX = x1
+        # 分类器输出类别分数
         output = self.Classifier(x)
 
         # add evidence
@@ -506,6 +572,7 @@ class Model(nn.Module):
         # S = torch.sum(alpha, dim=1, keepdim=True)
         # u = self.class_num / S
 
+         # 返回分类结果和融合后的特征
         return output, EncX   # alpha, uncertainty, feature_map
 
 def S_model(d_list,
@@ -533,3 +600,4 @@ def S_model(d_list,
 
 
     return model
+
