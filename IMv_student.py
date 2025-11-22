@@ -36,7 +36,7 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
             optimizer.zero_grad()
             # NOTE: sn_fix 是为了增加缺失而设置的一个固定的值
             output, _ = model(data, sn_fix, src_mask=sn, feature_fusion=args.feature_fusion,
-                           gt=None)  # logits is a list that without softmax
+                           gt=None)  # logits is a list that without softmax,不依赖真实标签
             # NOTE: 修改为决策层融合，注意mask缺失视图的值
             _, lbs = torch.max(output, dim=1)
             loss = late_fusion(output, target, sn, epoch, args)[0]
@@ -72,4 +72,5 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
             _, lbs = torch.max(output, dim=1)
             correct_num = correct_num + (lbs == target).sum().item()
     acc = correct_num / data_num
+
     print(f"Student test acc:{acc}")
