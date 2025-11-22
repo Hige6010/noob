@@ -16,10 +16,12 @@ import torch.nn.functional as F
 This code is adapted from:
 https://github.com/justsmart/RecFormer
 '''
+#nn.神经网络模块的容器类
 def get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
+#线性嵌入层，将不同维度的输入映射到相同维度上，封装再nn.ModeleList里，方便后续进行统一处理，
 def setEmbedingModel(d_list, d_out):
     return nn.ModuleList([nn.Linear(d, d_out) for d in d_list])
 
@@ -27,12 +29,15 @@ def setEmbedingModel(d_list, d_out):
 class Mlp(nn.Module):
     """ Transformer Feed-Forward Block """
 
+    # 输入维度，多层感知器中间维度，输出维度，丢失比例)
     def __init__(self, in_dim, mlp_dim, out_dim, dropout_rate=0.2):
         super(Mlp, self).__init__()
 
         # init layers
         self.fc1 = nn.Linear(in_dim, mlp_dim)
         self.fc2 = nn.Linear(mlp_dim, out_dim)
+        #非线性变换能力
+        #能捕捉更复杂的依赖关系
         self.act = nn.GELU()
         if dropout_rate > 0.0:
             self.dropout1 = nn.Dropout(dropout_rate)
@@ -53,16 +58,20 @@ class Mlp(nn.Module):
         return out
 
 
+#层归一化
 class Norm(nn.Module):
+    # 输入特征的维度, eps防止分母为0
     def __init__(self, d_model, eps=1e-6):
         super().__init__()
 
         self.size = d_model
 
         # create two learnable parameters to calibrate normalisation
+        #初始化是该参数的所有元素为1，对归一化后的结果缩放
         self.alpha = nn.Parameter(torch.ones(self.size))
+        #对归一化的结果进行偏移，二者让曾归一化保留稳定特征分布的有点，并且避免过度标准化导致特征信息缺失
         self.bias = nn.Parameter(torch.zeros(self.size))
-
+        # 极小正数，保证数值计算稳定性，即为1e-6
         self.eps = eps
 
     def forward(self, x):
@@ -71,18 +80,23 @@ class Norm(nn.Module):
         return norm
 
 #q, k, v:  B, heads, view, d_model/heads
+#掩码mask，屏蔽不需要关注的位置，src_mask源掩码，屏蔽输入序列的无效位置
 def attention(q, k, v, d_k, mask=None, src_mask=None, dropout=None):
+    #通过k和q的矩阵惩罚得到原始注意力得分，math.sqrt的作用是缩放，避免数据过高导致Softmax后梯度消失
     scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)  # scores shape is [bs heads view view]
     # k.transpose(-2, -1): B, heads, d_model/heads, view
 
     if src_mask is not None:
         if mask is not None:
+            # 扩展维度为(bs, 1, view)#unsqueeze为扩展张量维度，让掩码能与scores的维度对齐
             mask = mask.unsqueeze(1).float()  # (bs, 1, view)
+            #生成视图间的关联掩码，哪些视图对是同时存在的，后续可用于过滤无效的视图间交互
             mask = mask.unsqueeze(-1).matmul(mask.unsqueeze(-2))  # mask shape is [bs 1 view view]
 
             src_mask = src_mask.unsqueeze(1).float()  # (bs, 1, view)
             src_mask = src_mask.unsqueeze(-1).matmul(src_mask.unsqueeze(-2))  # mask shape is [bs 1 view view]
 
+            #合并两种掩码，生成“位置是否有效”的矩阵
             mask_all = mask.matmul(src_mask)
             scores = scores.masked_fill(mask_all == 0, -1e9)  # mask invalid view
         else:
@@ -105,6 +119,7 @@ class linear_attention(nn.Module):
         self.layerK = nn.Linear(in_dim, in_dim)
         self.layerV = nn.Linear(in_dim, in_dim)
         self.proj_drop = nn.Dropout(p=0.1)
+        #线性投影层，对注意力的输出精选最终的特征转换
         self.proj = nn.Linear(in_dim, in_dim)
         self.initialize()
 
@@ -515,5 +530,6 @@ def S_model(d_list,
                 nn.init.xavier_uniform_(p)
 
     model = model.to(device)
+
 
     return model
