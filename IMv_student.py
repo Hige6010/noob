@@ -12,6 +12,7 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
 
     print("---------StudentModel start----------")
     model = StudentModel
+    # Adam 优化器，它是深度学习中常用的优化算法，结合了动量（Momentum）和自适应学习率（Adagrad）的优点，收敛稳定且高效。
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
 
     loss_meter = AverageMeter()
@@ -74,3 +75,4 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
     acc = correct_num / data_num
 
     print(f"Student test acc:{acc}")
+
