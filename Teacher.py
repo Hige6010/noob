@@ -104,6 +104,7 @@ def attention(q, k, v, d_k, mask=None, src_mask=None, dropout=None):
     return output
 
 
+#跨视图和区域语义注意力
 class crs_attention(nn.Module):
     def __init__(self, in_dim, label_embedd):
         super(crs_attention, self).__init__()
@@ -129,6 +130,7 @@ class crs_attention(nn.Module):
         K = self.layerK(node_emb)
         V = self.layerV(node_emb)   # [128, 3, 512]
         # Query = (Q.unsqueeze(1)).repeat(1, N_view, 1)
+        #基于标签语义的视图关注度
         attn_1 = torch.matmul(Q.unsqueeze(1), K.transpose(-2, -1)) / math.sqrt(self.d_k)  # [128, 1, 3]   view-level attention
         # attn_1_score = attn_1.masked_fill(src_mask.unsqueeze(1) == 0, -1e9)  # mask invalid view
         mask = torch.tril(torch.ones_like(attn_1))
@@ -139,10 +141,12 @@ class crs_attention(nn.Module):
         attn_1_weight = self.proj_drop(attn_1_weight)
 
         # src_mask_2 = torch.matmul(src_mask.unsqueeze(-1), src_mask.unsqueeze(1))    # [128, 3, 3]
+        #视图间的相互关联
         attn_2 = torch.matmul(K, K.transpose(-2, -1)) / math.sqrt(self.d_k)
         mask_2 = torch.tril(torch.ones_like(attn_2))
         # attn_2_score = attn_2.masked_fill(src_mask_2 == 0, -1e9)
         attn_2_score = attn_2.masked_fill(mask_2 == 0, -1e9)
+        # 计算自注意力权重
         attn_2_weight = F.softmax(attn_2_score * tau, dim=-1)
         attn_2_weight = self.proj_drop(attn_2_weight)
         attn_2_new = torch.matmul(attn_2_weight, V)
@@ -156,6 +160,7 @@ class crs_attention(nn.Module):
 
         return attn
 
+#教师模型中的全局语义对齐
 class linear_attention(nn.Module):
     def __init__(self, in_dim):
         super(linear_attention, self).__init__()
@@ -189,7 +194,7 @@ class linear_attention(nn.Module):
 
         z = torch.matmul(self.proj_drop(attention_weight), V)
         z = self.proj(z)
-
+        #理想嵌入？？？
         return z
 
 class MultiHeadAttention(nn.Module):
@@ -584,5 +589,6 @@ def T_model(  d_list,
                 nn.init.xavier_uniform_(p)
 
     model = model.to(device)
+
 
     return model
