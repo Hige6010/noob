@@ -50,7 +50,7 @@ if __name__ == '__main__':
     args, unknown_args = parser.parse_known_args()
 
     # dataset_list = ['Scene15', 'Animal', 'BDGP', 'LandUse', 'Caltech101-20']   #
-    dataset_list = ['Scene15']
+    dataset_list = ['animal']
     for dataset in dataset_list:
         args.data_name = dataset
         # config

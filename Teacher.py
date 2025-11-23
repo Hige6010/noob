@@ -104,7 +104,6 @@ def attention(q, k, v, d_k, mask=None, src_mask=None, dropout=None):
     return output
 
 
-#跨视图和区域语义注意力
 class crs_attention(nn.Module):
     def __init__(self, in_dim, label_embedd):
         super(crs_attention, self).__init__()
@@ -130,7 +129,6 @@ class crs_attention(nn.Module):
         K = self.layerK(node_emb)
         V = self.layerV(node_emb)   # [128, 3, 512]
         # Query = (Q.unsqueeze(1)).repeat(1, N_view, 1)
-        #基于标签语义的视图关注度
         attn_1 = torch.matmul(Q.unsqueeze(1), K.transpose(-2, -1)) / math.sqrt(self.d_k)  # [128, 1, 3]   view-level attention
         # attn_1_score = attn_1.masked_fill(src_mask.unsqueeze(1) == 0, -1e9)  # mask invalid view
         mask = torch.tril(torch.ones_like(attn_1))
@@ -141,12 +139,10 @@ class crs_attention(nn.Module):
         attn_1_weight = self.proj_drop(attn_1_weight)
 
         # src_mask_2 = torch.matmul(src_mask.unsqueeze(-1), src_mask.unsqueeze(1))    # [128, 3, 3]
-        #视图间的相互关联
         attn_2 = torch.matmul(K, K.transpose(-2, -1)) / math.sqrt(self.d_k)
         mask_2 = torch.tril(torch.ones_like(attn_2))
         # attn_2_score = attn_2.masked_fill(src_mask_2 == 0, -1e9)
         attn_2_score = attn_2.masked_fill(mask_2 == 0, -1e9)
-        # 计算自注意力权重
         attn_2_weight = F.softmax(attn_2_score * tau, dim=-1)
         attn_2_weight = self.proj_drop(attn_2_weight)
         attn_2_new = torch.matmul(attn_2_weight, V)
@@ -160,7 +156,6 @@ class crs_attention(nn.Module):
 
         return attn
 
-#计算输入特征（node_emb 和 label_emb）之间的关联关系，通过加权融合生成更具代表性的特征
 class linear_attention(nn.Module):
     def __init__(self, in_dim):
         super(linear_attention, self).__init__()
@@ -194,7 +189,7 @@ class linear_attention(nn.Module):
 
         z = torch.matmul(self.proj_drop(attention_weight), V)
         z = self.proj(z)
-        #理想嵌入？？？
+
         return z
 
 class MultiHeadAttention(nn.Module):
@@ -439,17 +434,14 @@ class LabelEncoder(nn.Module):
         self.layers = nn.ModuleList()
         self.dropout = dropout
 
-        # 1. 第一层：将原始标签维度（nclass）映射到隐藏层维度（nhid）
         self.layers.append(nn.Linear(nclass, nhid, bias=with_bias))
         if with_bn:
             self.bns = nn.ModuleList()
             self.bns.append(nn.BatchNorm1d(nhid))
 
-        # 2. 中间层：隐藏层内部的变换（默认layers=3，中间层数量为1）
         for i in range(nlayers - 2):
             self.layers.append(nn.Linear(nhid, nhid, bias=with_bias))
             self.bns.append(nn.BatchNorm1d(nhid))
-         # 3. 最后一层：输出仍为nhid维度（保持编码后的维度一致性）
         self.layers.append(nn.Linear(nhid, nhid, bias=with_bias))
 
         self.initialize()
@@ -464,7 +456,6 @@ class LabelEncoder(nn.Module):
     def forward(self, y):
         # pdb.set_trace()
         for ii, layer in enumerate(self.layers):
-            # 最后一层：直接输出，不经过激活和Dropout,目的是保留编码后的向量在连续空间中的分布特性，便于后续计算（如与视图特征的注意力交互）
             if ii == len(self.layers) - 1:
                 return layer(y)
             y = layer(y)
@@ -553,10 +544,9 @@ class Model(nn.Module):
 
         # feature fusion
         # x1 = x1.mul(src_mask.unsqueeze(-1))
-        # 特征聚合（通过爱因斯坦求和与加权平均处理缺失视图）
-        x = torch.einsum('bvd->bd', x)# 合并视图维度，得到[batch_size, d_model]
-        wei = 1 / torch.sum(src_mask, 1)# 计算视图权重（处理缺失
-        x = torch.diag(wei).mm(x)# 加权聚合特征
+        x = torch.einsum('bvd->bd', x)
+        wei = 1 / torch.sum(src_mask, 1)
+        x = torch.diag(wei).mm(x)
         EncX = x
         # x1 = x1[:, 0]
         # x1 = self.to_latent(x1)
@@ -567,10 +557,8 @@ class Model(nn.Module):
         # S = torch.sum(alpha, dim=1, keepdim=True)
         # u = self.class_num / S
 
-        # 分类输出
-        output = self.Classifier(x)# 生成类别预测分数（Logits）
+        output = self.Classifier(x)
 
-        #返回融合后的深层特征 fused_feat，用于蒸馏给学生。
         return output, EncX, gtEmbed
 
 def T_model(  d_list,
@@ -586,7 +574,6 @@ def T_model(  d_list,
     assert d_model % heads == 0
     assert dropout < 1
 
-    # 实例化Model类
     model = Model(d_list, label_embedd, d_model, n_layers, heads, classes_num, tau, dropout)
 
     if load_weights is not None:
@@ -598,6 +585,4 @@ def T_model(  d_list,
 
     model = model.to(device)
 
-
     return model
-

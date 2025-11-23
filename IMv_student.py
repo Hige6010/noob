@@ -12,7 +12,6 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
 
     print("---------StudentModel start----------")
     model = StudentModel
-    # Adam 优化器，它是深度学习中常用的优化算法，结合了动量（Momentum）和自适应学习率（Adagrad）的优点，收敛稳定且高效。
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
 
     loss_meter = AverageMeter()
@@ -37,7 +36,7 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
             optimizer.zero_grad()
             # NOTE: sn_fix 是为了增加缺失而设置的一个固定的值
             output, _ = model(data, sn_fix, src_mask=sn, feature_fusion=args.feature_fusion,
-                           gt=None)  # logits is a list that without softmax,不依赖真实标签
+                           gt=None)  # logits is a list that without softmax
             # NOTE: 修改为决策层融合，注意mask缺失视图的值
             _, lbs = torch.max(output, dim=1)
             loss = late_fusion(output, target, sn, epoch, args)[0]
@@ -73,6 +72,4 @@ def student(device, args, StudentModel, train_loader, test_loader, Sn_loader, Sn
             _, lbs = torch.max(output, dim=1)
             correct_num = correct_num + (lbs == target).sum().item()
     acc = correct_num / data_num
-
     print(f"Student test acc:{acc}")
-
